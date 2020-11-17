@@ -7,20 +7,48 @@ import threading
 from heapq import heappush, heappop
 from math import ceil
 import time
+import csv
 import numpy as np
 import matplotlib.pyplot as plt
 
-output_path = 'output.txt'
+if len(sys.argv) != 2:
+    print('Usage: Pass input file containing hosts and #connections as an argument')
+    print('e.g. python3 client.py input.txt')
+    sys.exit()
+
+Chunk_size = 100000 # bytes
+socket.setdefaulttimeout(5) # timeout, in s
+output_path = 'output.txt' # where file is to be saved
+
+def parse_input():
+    input_path = sys.argv[1]
+    f = open(input_path, 'r')
+    lines = f.readlines()
+    Server_hosts, Target_paths, N_connections = [], [], []
+    for line in lines:
+        path, nconn = line.split(',')
+        path, nconn = path.strip(), nconn.strip()
+        N_connections.append(int(nconn))
+        
+        # Trim http:// or https://
+        if len(path)>6 and path[:7]=='http://':
+            path = path[7:]
+        elif len(path)>7 and path[:8]=='https://':
+            path = path[8:]
+        
+        host = path.split('/')[0]
+        file_path = path[len(host):]
+        Server_hosts.append(host)
+        Target_paths.append(file_path)
+    return Server_hosts, Target_paths, N_connections
+
+
 if not os.path.exists(output_path):
     Path(output_path).mkdir(parents=True, exist_ok=True)
 f = open(output_path, 'wb')
 
-Server_hosts = ['vayu.iitd.ac.in', 'norvig.com']
-N_connections = [5,5]
-Target_path = '/big.txt'
-Chunk_size = 100000
+Server_hosts, Target_paths, N_connections = parse_input()
 
-socket.setdefaulttimeout(5)
 Threads = []
 
 Bytes_downloaded = [0 for i in range(sum(N_connections))]
@@ -37,7 +65,6 @@ class DataQueue:
     def push(self, chunk_no, data):
         self.lock.acquire()
         heappush(self.pq, (chunk_no, data))
-        # print(f'Added chunk {chunk_no} to priority queue')
         while len(self.pq)>0 and self.pq[0][0] == self.lowest_unwritten:
             chunk_no, data = heappop(self.pq)
             f.write(data)
@@ -100,17 +127,12 @@ def get_chunk_size(header):
             return int(words[1])
     return -1
 
-def create_request(bytes_start, bytes_end, server_name, keep_alive=True):
+def create_request(bytes_start, bytes_end, server_name, target_path, keep_alive=True):
     alive_message = ''
     if keep_alive:
         alive_message = 'Connection: keep-alive\r\n'
-    req = f'GET {Target_path} HTTP/1.1\r\nHost: {server_name}\r\n{alive_message}Range: bytes={bytes_start}-{bytes_end}\r\n\r\n'
+    req = f'GET {target_path} HTTP/1.1\r\nHost: {server_name}\r\n{alive_message}Range: bytes={bytes_start}-{bytes_end}\r\n\r\n'
     return req.encode()
-
-def get_request(chunk_no, server_name):
-    bytes_start = chunk_no*Chunk_size
-    bytes_end = bytes_start + Chunk_size - 1
-    return create_request(bytes_start, bytes_end, server_name)
 
 # Get content-length
 content_length = -1
@@ -118,7 +140,7 @@ while content_length < 0:
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.connect((Server_hosts[0], 80))
-        s.sendall(create_request(0,0,Server_hosts[0],False))
+        s.sendall(create_request(0,0,Server_hosts[0],Target_paths[0],False))
         data = s.recv(4096)
         header, content = split_header(data)
         if check_ok(header):
@@ -128,7 +150,7 @@ while content_length < 0:
         time.sleep(1)
 print(f'Content_length: {content_length} bytes')
 
-def socket_task(server_name, s, s_id, tracker, dataqueue):
+def socket_task(server_name, target_path, s, s_id, tracker, dataqueue):
     while True:
         chunk_no = tracker.get_chunk()
         if chunk_no < 0:
@@ -144,12 +166,12 @@ def socket_task(server_name, s, s_id, tracker, dataqueue):
         while True:
             try:
                 try:
-                    s.sendall(create_request(bytes_start, bytes_end, server_name))
+                    s.sendall(create_request(bytes_start, bytes_end, server_name, target_path))
                 except:
                     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     s.connect((server_name, 80))
                     print(f'Socket {s_id} connected to {server_name}, port 80')
-                    s.sendall(create_request(bytes_start, bytes_end, server_name))
+                    s.sendall(create_request(bytes_start, bytes_end, server_name, target_path))
                 print(f'Socket {s_id} sent a GET request for chunk {chunk_no}')
                 
                 data = s.recv(4096)
@@ -208,7 +230,7 @@ for j in range(len(Server_hosts)):
     for i in range(N_connections[j]):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         Sockets.append(s)
-        x = threading.Thread(target=socket_task, args=(Server_hosts[j], s, len(Sockets)-1, tracker, dataqueue))
+        x = threading.Thread(target=socket_task, args=(Server_hosts[j], Target_paths[j], s, len(Sockets)-1, tracker, dataqueue))
         x.start()
         Threads.append(x)
 
@@ -227,8 +249,11 @@ else:
 plt.figure()
 plt.xlabel('Time (in s)')
 plt.ylabel('Bytes downloaded')
-plt.title('Progress of file download')
-for i in range(len(Sockets)):
-    plt.plot(Time_record[i], Bytes_record[i], label='Socket '+str(i))
+plt.title(f'Progress of file download\n(Chunk size: {Chunk_size} bytes)')
+conn_no = 0
+for j in range(len(Server_hosts)):
+    for i in range(N_connections[j]):
+        plt.plot(Time_record[conn_no], Bytes_record[conn_no], label=f'Conn-{conn_no} ({Server_hosts[j]})')
+        conn_no += 1
 plt.legend()
-plt.savefig('fig.png')
+plt.savefig('download-progress.png')
