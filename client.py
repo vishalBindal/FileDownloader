@@ -14,9 +14,9 @@ if not os.path.exists(output_path):
 f = open(output_path, 'wb')
 
 Server_hosts = ['vayu.iitd.ac.in', 'norvig.com']
-N_connections = [6,0]
+N_connections = [5,0]
 Target_path = '/big.txt'
-Chunk_size = 10000
+Chunk_size = 100000
 
 socket.setdefaulttimeout(5)
 Threads = []
@@ -131,15 +131,18 @@ def socket_task(server_name, s, s_id, tracker, dataqueue):
             except:
                 print(f'Socket {s_id} not connected. Exiting as no more chunks left')
             break
+        bytes_start = chunk_no * Chunk_size
+        bytes_end = bytes_start + Chunk_size - 1
+        chunk_content = b''
         while True:
             try:
                 try:
-                    s.sendall(get_request(chunk_no, server_name))
+                    s.sendall(create_request(bytes_start, bytes_end, server_name))
                 except:
                     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     s.connect((server_name, 80))
                     print(f'Socket {s_id} connected to {server_name}, port 80')
-                    s.sendall(get_request(chunk_no, server_name))
+                    s.sendall(create_request(bytes_start, bytes_end, server_name))
                 print(f'Socket {s_id} sent a GET request for chunk {chunk_no}')
                 
                 data = s.recv(4096)
@@ -147,33 +150,31 @@ def socket_task(server_name, s, s_id, tracker, dataqueue):
                 header, content = split_header(data)
                 if not check_ok(header):
                     print(f'Response on socket {s_id} not OK')
-                    # print(header)
-                    # print(content)
-                    # input()
                     s.close()
                     continue
                 chunk_s = get_chunk_size(header)
                 if chunk_s < 0:
                     print(f'Unable to parse chunk size on socket {s_id}')
-                    # print(header)
-                    # print(content)
-                    # input()
                     s.close()
                     continue
 
                 current_length = len(content)
                 
+                chunk_content = chunk_content + content
+                bytes_start = bytes_start + current_length
+
                 while current_length < chunk_s:
                     data = s.recv(4096)
                     if not data:
                         print(f'Chunk on socket {s_id} not received fully. Will request for chunk again.')
                         break
                     current_length = current_length + len(data)
-                    content = content + data
+                    chunk_content = chunk_content + data
+                    bytes_start = bytes_start + len(data)
 
                 if current_length >= chunk_s:
                     print(f'Received chunk {chunk_no} on socket {s_id} fully, and will be written to disk shortly.')
-                    x = threading.Thread(target=dataqueue.push, args=(chunk_no, content))
+                    x = threading.Thread(target=dataqueue.push, args=(chunk_no, chunk_content))
                     x.start()
                     Threads.append(x)
                     break
