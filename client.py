@@ -7,6 +7,8 @@ import threading
 from heapq import heappush, heappop
 from math import ceil
 import time
+import numpy as np
+import matplotlib.pyplot as plt
 
 output_path = 'output.txt'
 if not os.path.exists(output_path):
@@ -14,12 +16,17 @@ if not os.path.exists(output_path):
 f = open(output_path, 'wb')
 
 Server_hosts = ['vayu.iitd.ac.in', 'norvig.com']
-N_connections = [5,0]
+N_connections = [5,5]
 Target_path = '/big.txt'
 Chunk_size = 100000
 
 socket.setdefaulttimeout(5)
 Threads = []
+
+Bytes_downloaded = [0 for i in range(sum(N_connections))]
+Bytes_record = [[] for i in range(sum(N_connections))]
+Time_record = [[] for i in range(sum(N_connections))]
+start_time = time.time()
 
 class DataQueue:
     def __init__(self):
@@ -163,6 +170,10 @@ def socket_task(server_name, s, s_id, tracker, dataqueue):
                 chunk_content = chunk_content + content
                 bytes_start = bytes_start + current_length
 
+                Bytes_downloaded[s_id] += current_length
+                Bytes_record[s_id].append(Bytes_downloaded[s_id])
+                Time_record[s_id].append(time.time() - start_time)
+
                 while current_length < chunk_s:
                     data = s.recv(4096)
                     if not data:
@@ -171,6 +182,10 @@ def socket_task(server_name, s, s_id, tracker, dataqueue):
                     current_length = current_length + len(data)
                     chunk_content = chunk_content + data
                     bytes_start = bytes_start + len(data)
+
+                    Bytes_downloaded[s_id] += len(data)
+                    Bytes_record[s_id].append(Bytes_downloaded[s_id])
+                    Time_record[s_id].append(time.time() - start_time)
 
                 if current_length >= chunk_s:
                     print(f'Received chunk {chunk_no} on socket {s_id} fully, and will be written to disk shortly.')
@@ -187,11 +202,13 @@ tracker = TrackChunks(content_length)
 dataqueue = DataQueue()
 Sockets = []
 
+start_time = time.time()
+
 for j in range(len(Server_hosts)):
     for i in range(N_connections[j]):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         Sockets.append(s)
-        x = threading.Thread(target=socket_task, args=(Server_hosts[j], s, len(Sockets), tracker, dataqueue))
+        x = threading.Thread(target=socket_task, args=(Server_hosts[j], s, len(Sockets)-1, tracker, dataqueue))
         x.start()
         Threads.append(x)
 
@@ -206,3 +223,12 @@ if checksum == '70a4b9f4707d258f559f91615297a3ec':
     print('SUCCESS!')
 else:
     print('FAILURE')
+
+plt.figure()
+plt.xlabel('Time (in s)')
+plt.ylabel('Bytes downloaded')
+plt.title('Progress of file download')
+for i in range(len(Sockets)):
+    plt.plot(Time_record[i], Bytes_record[i], label='Socket '+str(i))
+plt.legend()
+plt.savefig('fig.png')
